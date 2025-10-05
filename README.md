@@ -1,24 +1,25 @@
-# Appoint-AI | AI Agent
+# Appoint-AI | Medical Appointment Booking Agent
 
-An AI-powered appointment booking system with voice support using FastAPI, LangGraph, and OpenAI services.
+An AI-powered appointment booking system with advanced speech capabilities using FastAPI, Deepgram, and OpenAI services.
 
 ## Features
 
-- 🎤 **Voice Interaction**: Book appointments using natural speech
-- 💬 **Text Chat**: Alternative text-based booking interface  
+- 🎤 **Advanced Speech Processing**: Real-time speech-to-text and text-to-speech via Deepgram
+- 💬 **Text Conversations**: Alternative text-based booking interface  
 - 🤖 **AI-Powered**: Uses OpenAI GPT-4 for natural conversation
-- 🔄 **Conversation Flow**: LangGraph manages multi-step booking process
-- 📋 **Complete Information Gathering**: Collects patient details, appointment preferences, and medical conditions
-- 🏥 **Medical Context Aware**: Handles medical conditions like blood pressure, diabetes
-- 📞 **Receptionist Simulation**: Natural conversation flow like calling a doctor's office
+- � **Phone Authentication**: SMS-based OTP authentication system
+- 📋 **Conversation Management**: Real-time speech processing without Twilio voice dependencies
+- 🏥 **Medical Context Aware**: Handles appointment booking for hospitals and doctors
+- 📞 **No Traditional Calling**: Direct conversation interface without phone system dependencies
 
 ## Technology Stack
 
 - **Backend**: FastAPI
 - **AI/LLM**: OpenAI GPT-4
-- **Conversation Management**: LangGraph
-- **Text-to-Speech**: OpenAI TTS (with Google TTS fallback)
-- **Audio Processing**: PyAudio, pydub
+- **Speech Services**: Deepgram (STT/TTS)
+- **Authentication**: JWT with SMS OTP (Twilio for SMS only)
+- **Database**: PostgreSQL with SQLAlchemy
+- **Audio Processing**: Deepgram SDK
 
 ## Quick Start
 
@@ -40,15 +41,28 @@ pip install -r requirements.txt
 
 ### 2. Configuration
 
-Update the `.env` file with your OpenAI API key:
+Update the `.env` file with your API keys:
 
 ```env
+# Core services (required)
 OPENAI_API_KEY=your_actual_openai_api_key_here
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+DATABASE_URL=postgresql://username:password@localhost:5432/medassist
+
+# Authentication (for OTP SMS)
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token  
+TWILIO_PHONE_NUMBER=+1234567890
+JWT_SECRET_KEY=your_jwt_secret_key
+
+# Server configuration
 APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
-TTS_PROVIDER=openai
-TTS_VOICE=alloy
+
+# Deepgram configuration
+TTS_PROVIDER=deepgram
+TTS_VOICE=aura-asteria-en
 TTS_SPEED=1.0
 ```
 
@@ -66,50 +80,96 @@ The API will be available at `http://localhost:8000`
 
 ## API Usage
 
-### Start a Session
+### Authentication
+
+#### 1. Send OTP
 
 ```bash
-curl -X POST http://localhost:8000/session/start
+curl -X POST http://localhost:8000/auth/send-otp \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "+1234567890"}'
 ```
 
 Response:
 ```json
 {
-  "session_id": "uuid-here",
-  "message": "Hello! I'm here to help you book a medical appointment.",
-  "status": "started"
+  "success": true,
+  "message": "OTP sent successfully to your phone number",
+  "expires_in_minutes": 5
 }
 ```
 
-### Text Chat
+#### 2. Verify OTP and Get Token
 
 ```bash
-curl -X POST http://localhost:8000/chat/text \
+curl -X POST http://localhost:8000/auth/verify-otp \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "I need to book an appointment",
-    "session_id": "your-session-id"
+    "phone_number": "+1234567890",
+    "otp_code": "123456"
   }'
 ```
 
-### Voice Chat
+Response:
+```json
+{
+  "success": true,
+  "message": "Phone number verified successfully",
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "user_id": 1
+}
+```
+
+### Appointment Management
+
+#### Create Appointment
 
 ```bash
-curl -X POST http://localhost:8000/chat/voice \
+curl -X POST http://localhost:8000/appointments \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "audio_data": "base64-encoded-audio",
-    "session_id": "your-session-id",
-    "format": "wav"
+    "patient_name": "John Doe",
+    "patient_phone": "+1234567890", 
+    "hospital_name": "City Hospital",
+    "hospital_phone": "+1987654321",
+    "doctor_name": "Dr. Smith",
+    "call_time": 1696521600
   }'
 ```
 
-### Upload Audio File
+### Conversation Flow
+
+#### 1. Start Conversation
 
 ```bash
-curl -X POST http://localhost:8000/chat/voice/upload \
-  -F "file=@audio.wav" \
-  -F "session_id=your-session-id"
+curl -X GET http://localhost:8000/start_conversation/YOUR_CALL_ID \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+#### 2. Send Speech Input
+
+```bash
+curl -X POST http://localhost:8000/conversation/YOUR_CALL_ID/speak \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "audio_data=BASE64_ENCODED_AUDIO"
+```
+
+#### 3. Send Text Input
+
+```bash
+curl -X POST http://localhost:8000/conversation/YOUR_CALL_ID/text \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "message=Hello, I need to book an appointment"
+```
+
+#### 4. Get AI Audio Response
+
+```bash
+curl -X GET http://localhost:8000/conversation/YOUR_CALL_ID/audio \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  --output response.wav
 ```
 
 ## Conversation Flow
@@ -136,16 +196,29 @@ The AI agent follows a structured conversation flow:
 
 ## API Endpoints
 
-- `GET /` - API information
+### Authentication
+- `POST /auth/send-otp` - Send OTP to phone number
+- `POST /auth/verify-otp` - Verify OTP and get access token
+- `GET /auth/me` - Get current user information
+
+### Appointment Management  
+- `POST /appointments` - Create new appointment
+- `GET /appointments` - List user's appointments
+- `GET /appointments/{call_id}` - Get specific appointment
+- `DELETE /appointments/{call_id}` - Delete appointment
+- `PATCH /appointments/{call_id}/state` - Update appointment state
+
+### Conversation (Deepgram-powered)
+- `GET /start_conversation/{call_id}` - Start conversation session
+- `POST /conversation/{call_id}/speak` - Send speech input (base64 audio)
+- `POST /conversation/{call_id}/text` - Send text input
+- `GET /conversation/{call_id}/audio` - Get AI response audio
+
+### Testing & Health
+- `GET /test/conversation/{call_id}` - Test conversation flow
+- `GET /test/deepgram-tts` - Test Deepgram TTS
 - `GET /health` - Health check
-- `POST /session/start` - Start new conversation session
-- `GET /session/{session_id}` - Get session state
-- `POST /chat/text` - Text-based conversation
-- `POST /chat/voice` - Voice-based conversation
-- `POST /chat/voice/upload` - Upload audio file
-- `GET /appointment/{session_id}/summary` - Get appointment summary
-- `DELETE /session/{session_id}` - End session
-- `GET /sessions/active` - List active sessions (debug)
+- `GET /` - API information
 
 ## Data Models
 
@@ -185,15 +258,23 @@ Available TTS voices (OpenAI):
 
 ## Environment Variables
 
+## Environment Variables
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | OpenAI API key (required) | - |
+| `DEEPGRAM_API_KEY` | Deepgram API key for speech services (required) | - |
+| `DATABASE_URL` | PostgreSQL connection string (required) | - |
+| `TWILIO_ACCOUNT_SID` | Twilio SID for OTP SMS (required for auth) | - |
+| `TWILIO_AUTH_TOKEN` | Twilio token for OTP SMS (required for auth) | - |
+| `TWILIO_PHONE_NUMBER` | Twilio phone for OTP SMS (required for auth) | - |
+| `JWT_SECRET_KEY` | JWT signing secret (required) | - |
 | `APP_HOST` | Server host | `0.0.0.0` |
 | `APP_PORT` | Server port | `8000` |
 | `DEBUG` | Debug mode | `True` |
-| `TTS_PROVIDER` | TTS provider | `openai` |
-| `TTS_VOICE` | TTS voice | `alloy` |
-| `TTS_SPEED` | TTS speed | `1.0` |
+| `TTS_PROVIDER` | TTS provider (use 'deepgram') | `deepgram` |
+| `TTS_VOICE` | Deepgram voice model | `aura-asteria-en` |
+| `TTS_SPEED` | TTS speech speed | `1.0` |
 | `AUDIO_SAMPLE_RATE` | Audio sample rate | `16000` |
 | `AUDIO_CHANNELS` | Audio channels | `1` |
 

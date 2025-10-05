@@ -3,11 +3,13 @@ import io
 import os
 import tempfile
 from typing import Optional
-import speech_recognition as sr
 from gtts import gTTS
-from pydub import AudioSegment
 import openai
 from dotenv import load_dotenv
+from deepgram import DeepgramClient, SpeakOptions
+import asyncio
+import httpx
+import time
 
 load_dotenv()
 
@@ -15,31 +17,86 @@ load_dotenv()
 class TTSService:
     """Text-to-Speech service with multiple provider support"""
     
-    def __init__(self, provider: str = "openai"):
+    def __init__(self, provider: str = "deepgram"):
         self.provider = provider
+        
+        # Initialize Deepgram client
+        self.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
+        if self.deepgram_api_key:
+            try:
+                self.deepgram = DeepgramClient(self.deepgram_api_key)
+            except Exception as e:
+                print(f"Deepgram TTS client initialization failed: {e}")
+                self.deepgram = None
+        else:
+            self.deepgram = None
+            
+        # Initialize OpenAI client
         if provider == "openai":
             try:
                 import openai
-                self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             except Exception as e:
                 print(f"OpenAI TTS client initialization failed: {e}")
-                self.client = None
+                self.openai_client = None
+        else:
+            self.openai_client = None
     
     def text_to_speech(self, text: str, voice: str = "alloy", speed: float = 1.0) -> bytes:
-        """Convert text to speech audio bytes"""
+        """Convert text to speech audio bytes with timeout handling"""
+        start_time = time.time()
+        
         try:
-            if self.provider == "openai":
-                return self._openai_tts(text, voice, speed)
+            print(f"Starting TTS generation with {self.provider} for text: {text[:50]}...")
+            
+            if self.provider == "deepgram" and self.deepgram:
+                result = self._deepgram_tts(text, voice)
+                print(f"Deepgram TTS completed in {time.time() - start_time:.2f} seconds")
+                return result
+            elif self.provider == "openai" and self.openai_client:
+                result = self._openai_tts(text, voice, speed)
+                print(f"OpenAI TTS completed in {time.time() - start_time:.2f} seconds")
+                return result
             else:
-                return self._gtts_tts(text)
+                print(f"Falling back to gTTS for provider {self.provider}")
+                result = self._gtts_tts(text)
+                print(f"gTTS completed in {time.time() - start_time:.2f} seconds")
+                return result
         except Exception as e:
-            print(f"TTS Error: {e}")
-            # Fallback to gTTS
-            return self._gtts_tts(text)
+            print(f"TTS Error after {time.time() - start_time:.2f} seconds: {e}")
+            # Ultra-fast fallback to gTTS
+            try:
+                print("Attempting gTTS fallback...")
+                return self._gtts_tts(text)
+            except Exception as fallback_e:
+                print(f"Fallback TTS also failed: {fallback_e}")
+                raise e
+    
+    def _deepgram_tts(self, text: str, voice: str = "aura-asteria-en") -> bytes:
+        """Deepgram TTS implementation with optimized settings"""
+        try:
+            options = SpeakOptions(
+                model=voice,
+                encoding="linear16",
+                sample_rate=16000,
+                channels=1
+            )
+            
+            # Use sync API for faster response
+            response = self.deepgram.speak.v("1").save(
+                text,
+                options=options
+            )
+            
+            return response
+            
+        except Exception as e:
+            print(f"Deepgram TTS error: {e}")
+            raise
     
     def _openai_tts(self, text: str, voice: str = "alloy", speed: float = 1.0) -> bytes:
         """OpenAI TTS implementation"""
-        response = self.client.audio.speech.create(
+        response = self.openai_client.audio.speech.create(
             model="tts-1",
             voice=voice,
             input=text,
@@ -60,34 +117,96 @@ class TTSService:
             return audio_bytes
     
     def text_to_base64_audio(self, text: str, voice: str = "alloy", speed: float = 1.0) -> str:
-        """Convert text to base64 encoded audio"""
-        audio_bytes = self.text_to_speech(text, voice, speed)
-        return base64.b64encode(audio_bytes).decode('utf-8')
+        """Convert text to base64 encoded audio with error handling"""
+        try:
+            # For Deepgram, use the configured voice from environment
+            if self.provider == "deepgram":
+                voice = os.getenv("TTS_VOICE", "aura-asteria-en")
+            
+            audio_bytes = self.text_to_speech(text, voice, speed)
+            return base64.b64encode(audio_bytes).decode('utf-8')
+        except Exception as e:
+            print(f"Error in text_to_base64_audio: {e}")
+            raise
 
 
 class ASRService:
     """Automatic Speech Recognition service"""
     
     def __init__(self):
-        self.recognizer = sr.Recognizer()
         try:
             import openai
             self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         except Exception as e:
             print(f"OpenAI ASR client initialization failed: {e}")
             self.openai_client = None
+            
+        # Initialize Deepgram client
+        self.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
+        if self.deepgram_api_key:
+            try:
+                from deepgram import DeepgramClient, PrerecordedOptions
+                self.deepgram = DeepgramClient(self.deepgram_api_key)
+                self.PrerecordedOptions = PrerecordedOptions
+            except Exception as e:
+                print(f"Deepgram ASR client initialization failed: {e}")
+                self.deepgram = None
+        else:
+            self.deepgram = None
     
-    def audio_to_text(self, audio_data: bytes, provider: str = "openai") -> str:
+    def audio_to_text(self, audio_data: bytes, provider: str = "deepgram") -> str:
         """Convert audio bytes to text"""
         try:
-            if provider == "openai":
+            if provider == "deepgram" and self.deepgram:
+                return self._deepgram_asr(audio_data)
+            elif provider == "openai" and self.openai_client:
                 return self._openai_asr(audio_data)
             else:
-                return self._google_asr(audio_data)
+                # Fallback to OpenAI if available
+                if self.openai_client:
+                    return self._openai_asr(audio_data)
+                else:
+                    return "Speech recognition service not available."
         except Exception as e:
             print(f"ASR Error: {e}")
-            # Fallback to Google Speech Recognition
-            return self._google_asr(audio_data)
+            # Fallback to OpenAI if Deepgram fails
+            if provider != "openai" and self.openai_client:
+                try:
+                    return self._openai_asr(audio_data)
+                except:
+                    pass
+            return "Sorry, I couldn't process the audio."
+    
+    def _deepgram_asr(self, audio_data: bytes) -> str:
+        """Deepgram ASR implementation"""
+        try:
+            # Configure Deepgram options
+            options = self.PrerecordedOptions(
+                model="nova-2",
+                language="en-US",
+                smart_format=True,
+                punctuate=True
+            )
+            
+            # Create payload with audio data
+            payload = {"buffer": audio_data}
+            
+            # Send request to Deepgram
+            response = self.deepgram.listen.prerecorded.v("1").transcribe_file(
+                payload, options
+            )
+            
+            # Extract transcript
+            if response.results and response.results.channels:
+                alternatives = response.results.channels[0].alternatives
+                if alternatives and len(alternatives) > 0:
+                    return alternatives[0].transcript.strip()
+            
+            return "No speech detected."
+            
+        except Exception as e:
+            print(f"Deepgram ASR error: {e}")
+            raise
     
     def _openai_asr(self, audio_data: bytes) -> str:
         """OpenAI Whisper ASR implementation"""
@@ -106,25 +225,10 @@ class ASRService:
             return transcript.strip()
     
     def _google_asr(self, audio_data: bytes) -> str:
-        """Google Speech Recognition implementation (fallback)"""
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            temp_file.write(audio_data)
-            temp_file.flush()
-            
-            try:
-                with sr.AudioFile(temp_file.name) as source:
-                    audio = self.recognizer.record(source)
-                text = self.recognizer.recognize_google(audio)
-                os.unlink(temp_file.name)
-                return text
-            except sr.UnknownValueError:
-                os.unlink(temp_file.name)
-                return "Sorry, I couldn't understand the audio."
-            except sr.RequestError as e:
-                os.unlink(temp_file.name)
-                return f"Could not request results; {e}"
+        """Fallback ASR implementation - returns a message since speech_recognition is not compatible with Python 3.13"""
+        return "Speech recognition fallback not available. Please use OpenAI Whisper."
     
-    def base64_audio_to_text(self, base64_audio: str, provider: str = "openai") -> str:
+    def base64_audio_to_text(self, base64_audio: str, provider: str = "deepgram") -> str:
         """Convert base64 encoded audio to text"""
         try:
             audio_bytes = base64.b64decode(base64_audio)
@@ -139,23 +243,14 @@ class AudioProcessor:
     
     @staticmethod
     def convert_audio_format(audio_data: bytes, input_format: str, output_format: str = "wav") -> bytes:
-        """Convert audio from one format to another"""
-        try:
-            audio = AudioSegment.from_file(io.BytesIO(audio_data), format=input_format)
-            
-            # Ensure proper format for speech recognition
-            if output_format == "wav":
-                audio = audio.set_frame_rate(16000)  # 16kHz sample rate
-                audio = audio.set_channels(1)  # Mono
-                audio = audio.set_sample_width(2)  # 16-bit
-            
-            output_buffer = io.BytesIO()
-            audio.export(output_buffer, format=output_format)
-            return output_buffer.getvalue()
-            
-        except Exception as e:
-            print(f"Audio conversion error: {e}")
-            return audio_data
+        """Convert audio from one format to another - simplified for Python 3.13 compatibility
+        
+        Note: This simplified version returns the original audio data since OpenAI Whisper
+        and Deepgram can handle various audio formats directly.
+        """
+        # Since we're using OpenAI Whisper and Deepgram which support multiple formats,
+        # we can return the original data without conversion
+        return audio_data
     
     @staticmethod
     def validate_audio_data(audio_data: bytes, max_size_mb: int = 25) -> bool:
@@ -179,6 +274,6 @@ class AudioProcessor:
 
 
 # Service instances
-tts_service = TTSService(provider=os.getenv("TTS_PROVIDER", "gtts"))
+tts_service = TTSService(provider=os.getenv("TTS_PROVIDER", "deepgram"))
 asr_service = ASRService()
 audio_processor = AudioProcessor()

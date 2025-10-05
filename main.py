@@ -3,40 +3,46 @@
 Medical Appointment Booking AI Agent
 ====================================
 
-An AI-powered medical appointment booking system with voice support using:
+An AI-powered medical appointment booking system with Deepgram speech support:
 - FastAPI for REST API endpoints
-- LangGraph for conversation flow management  
-- OpenAI GPT-4 for natural language processing
-- OpenAI Whisper for speech-to-text (ASR)
-- OpenAI TTS for text-to-speech
-- Fallback to Google services when needed
+- OpenAI GPT-4 for natural language processing  
+- Deepgram for speech-to-text (ASR) and text-to-speech (TTS)
+- PostgreSQL for data persistence
+- JWT-based phone number authentication
 
 Features:
-- Voice-based appointment booking via microphone
-- Text-based chat interface
-- Collects patient information (name, age, phone)
-- Gathers appointment details (doctor, hospital, time)
-- Records medical conditions (blood pressure, diabetes, etc.)
-- Confirms appointments with unique confirmation IDs
+- Phone number OTP authentication
+- Voice-based conversation via Deepgram
+- Text-based conversation interface
+- Real-time speech processing
+- Appointment scheduling and management
+- User-specific appointment tracking
 
 Usage:
     python main.py
 
 API Endpoints:
-    POST /session/start - Start new conversation session (with optional patient info)
-    POST /chat/text - Text-based conversation
-    POST /chat/voice - Voice-based conversation via microphone
-    POST /chat/voice/upload - Upload audio file for conversation
-    GET /session/{session_id} - Get session state
-    GET /appointment/{session_id}/summary - Get appointment summary
-    DELETE /session/{session_id} - End session
+    POST /auth/send-otp - Send OTP to phone number
+    POST /auth/verify-otp - Verify OTP and get access token
+    POST /appointments - Create new appointment
+    GET /start_conversation/{call_id} - Start conversation session
+    POST /conversation/{call_id}/speak - Send speech input
+    POST /conversation/{call_id}/text - Send text input
+    GET /conversation/{call_id}/audio - Get AI response audio
+    GET /appointments - List user appointments
 
 Environment Variables:
-    OPENAI_API_KEY - Required for OpenAI services
+    OPENAI_API_KEY - Required for OpenAI GPT-4
+    DEEPGRAM_API_KEY - Required for speech services
+    DATABASE_URL - PostgreSQL connection string
+    TWILIO_ACCOUNT_SID - For OTP SMS (optional for testing)
+    TWILIO_AUTH_TOKEN - For OTP SMS (optional for testing)
+    TWILIO_PHONE_NUMBER - For OTP SMS (optional for testing)
+    JWT_SECRET_KEY - For JWT token signing
     APP_HOST - Server host (default: 0.0.0.0)
     APP_PORT - Server port (default: 8000)
     DEBUG - Enable debug mode (default: True)
-    TTS_VOICE - TTS voice selection (default: alloy)
+    TTS_VOICE - Deepgram voice selection (default: aura-asteria-en)
     TTS_SPEED - TTS speed (default: 1.0)
 """
 
@@ -51,7 +57,7 @@ load_dotenv()
 def main():
     """Main application entry point"""
     # Validate required environment variables
-    required_env_vars = ["OPENAI_API_KEY"]
+    required_env_vars = ["OPENAI_API_KEY", "DATABASE_URL", "DEEPGRAM_API_KEY"]
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
     
     if missing_vars:
@@ -72,12 +78,20 @@ def main():
     print(f"   Port: {port}")
     print(f"   Debug: {debug}")
     print(f"   OpenAI API: {'✅ Configured' if os.getenv('OPENAI_API_KEY') else '❌ Missing'}")
+    print(f"   Database: {'✅ Configured' if os.getenv('DATABASE_URL') else '❌ Missing'}")
+    print(f"   Deepgram API: {'✅ Configured' if os.getenv('DEEPGRAM_API_KEY') else '❌ Missing'}")
+    print(f"   Twilio (OTP only): {'✅ Configured' if os.getenv('TWILIO_ACCOUNT_SID') else '⚠️  Optional'}")
     
     print("\n📋 Available Endpoints:")
     print(f"   🌐 API Documentation: http://{host}:{port}/docs")
-    print(f"   💬 Start Session: POST http://{host}:{port}/session/start")
-    print(f"   📝 Text Chat: POST http://{host}:{port}/chat/text")  
-    print(f"   🎤 Voice Chat: POST http://{host}:{port}/chat/voice")
+    print(f"   � Send OTP: POST http://{host}:{port}/auth/send-otp")
+    print(f"   � Verify OTP: POST http://{host}:{port}/auth/verify-otp")
+    print(f"   � Create Appointment: POST http://{host}:{port}/appointments")
+    print(f"   💬 Start Conversation: GET http://{host}:{port}/start_conversation/{{call_id}}")
+    print(f"   🎤 Send Speech: POST http://{host}:{port}/conversation/{{call_id}}/speak")
+    print(f"   📝 Send Text: POST http://{host}:{port}/conversation/{{call_id}}/text")
+    print(f"   🔊 Get Audio: GET http://{host}:{port}/conversation/{{call_id}}/audio")
+    print(f"   📊 View Appointments: GET http://{host}:{port}/appointments")
     print(f"   📊 Health Check: GET http://{host}:{port}/health")
     
     print("\n🚀 Starting server...")
