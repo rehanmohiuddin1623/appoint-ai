@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-DOCKER_IMAGE="rehanmohiuddin1623/med-assist-agent:latest"
+DOCKER_IMAGE="rehanmohiuddin/med-assist-agent:latest"
 APP_NAME="med-assist-agent"
 DEPLOY_DIR="/opt/${APP_NAME}"
 BACKUP_DIR="${DEPLOY_DIR}/backups"
@@ -162,7 +162,7 @@ services:
       retries: 3
 
   app:
-    image: rehanmohiuddin1623/med-assist-agent:latest
+    image: rehanmohiuddin/med-assist-agent:latest
     container_name: med-assist-app
     restart: unless-stopped
     ports:
