@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: rehanmohiuddin1623/med-assist-agent
+  IMAGE_NAME: rehanmohiuddin/med-assist-agent
 
 jobs:
   build-and-push:
