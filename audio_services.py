@@ -35,7 +35,10 @@ class TTSService:
         if provider == "openai":
             try:
                 import openai
-                self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                self.openai_client = openai.OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    timeout=30.0  # Add explicit timeout
+                )
             except Exception as e:
                 print(f"OpenAI TTS client initialization failed: {e}")
                 self.openai_client = None
@@ -136,7 +139,10 @@ class ASRService:
     def __init__(self):
         try:
             import openai
-            self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            self.openai_client = openai.OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                timeout=30.0  # Add explicit timeout
+            )
         except Exception as e:
             print(f"OpenAI ASR client initialization failed: {e}")
             self.openai_client = None

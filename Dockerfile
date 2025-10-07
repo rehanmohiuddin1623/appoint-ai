@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     libc-dev \
     libffi-dev \
     libssl-dev \
+    libpq-dev \
+    postgresql-client \
     portaudio19-dev \
     python3-dev \
     pkg-config \

@@ -25,7 +25,10 @@ load_dotenv()
 
 # Initialize OpenAI client
 try:
-    openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    openai_client = openai.OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        timeout=30.0  # Add explicit timeout
+    )
 except Exception as e:
     print(f"OpenAI client initialization failed: {e}")
     openai_client = None
