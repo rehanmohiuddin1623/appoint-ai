@@ -139,10 +139,27 @@ class ASRService:
     def __init__(self):
         try:
             import openai
+            # Try to create OpenAI client with minimal configuration
             self.openai_client = openai.OpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
-                timeout=30.0  # Add explicit timeout
+                timeout=30.0,
+                max_retries=3
             )
+            # Test the client to ensure it works
+            print("OpenAI ASR client initialized successfully")
+        except TypeError as e:
+            if "proxies" in str(e):
+                print("OpenAI client proxies argument error - trying alternative initialization")
+                try:
+                    # Fallback initialization without any optional parameters
+                    self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                    print("OpenAI ASR client initialized with fallback method")
+                except Exception as fallback_e:
+                    print(f"OpenAI ASR client fallback initialization failed: {fallback_e}")
+                    self.openai_client = None
+            else:
+                print(f"OpenAI ASR client initialization failed: {e}")
+                self.openai_client = None
         except Exception as e:
             print(f"OpenAI ASR client initialization failed: {e}")
             self.openai_client = None
