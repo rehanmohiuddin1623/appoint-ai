@@ -102,7 +102,6 @@ class CallScheduleRequest(BaseModel):
         if v <= 0:
             raise ValueError('call_time must be a positive epoch timestamp')
         # Check if timestamp is reasonable (not too far in past or future)
-        import time
         current_time = int(time.time())
         if v < current_time - 86400:  # Not more than 1 day in the past
             raise ValueError('call_time cannot be more than 1 day in the past')
@@ -148,3 +147,30 @@ class UserResponse(BaseModel):
     phone_number: str
     is_verified: bool
     created_at: int  # Epoch timestamp
+    full_name: Optional[str] = None
+    blood_sugar_avg_without_tablets: Optional[str] = None
+    blood_pressure: Optional[str] = None
+    blood_group: Optional[str] = None
+    tsh_thyroid_value: Optional[str] = None
+
+class UserMedicalDetailsRequest(BaseModel):
+    full_name: Optional[str] = None
+    blood_sugar_avg_without_tablets: Optional[str] = None  # Average blood sugar when patient doesn't take tablets
+    blood_pressure: Optional[str] = None  # Blood pressure readings
+    blood_group: Optional[str] = None  # Blood group (A+, B-, O+, etc.)
+    tsh_thyroid_value: Optional[str] = None  # TSH thyroid value if present
+    
+    @validator('blood_group')
+    def validate_blood_group(cls, v):
+        if v is not None:
+            valid_blood_groups = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
+            if v.upper() not in valid_blood_groups:
+                raise ValueError(f'Invalid blood group. Must be one of: {", ".join(valid_blood_groups)}')
+            return v.upper()
+        return v
+
+class UserMedicalDetailsResponse(BaseModel):
+    success: bool
+    message: str
+    user_id: int
+    medical_details: dict

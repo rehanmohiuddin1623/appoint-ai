@@ -9,13 +9,14 @@ from audio_services import TTSService, ASRService
 from models import (
     CallScheduleRequest, CallScheduleResponse, SendOTPRequest, SendOTPResponse,
     VerifyOTPRequest, VerifyOTPResponse, AppointmentResponse, UpdateAppointmentStateRequest,
-    UserResponse
+    UserResponse, UserMedicalDetailsRequest, UserMedicalDetailsResponse
 )
 from database import get_db, AppointmentCall, User, AppointmentState, init_database
 from auth import (
     initiate_otp_verification, verify_otp_code, get_current_user,
     validate_phone_number
 )
+from scheduler import get_scheduler
 from sqlalchemy.orm import Session
 import openai
 from dotenv import load_dotenv
@@ -115,6 +116,20 @@ app = FastAPI(title="Medical Appointment Booking API", description="Schedule and
 async def startup_event():
     if not init_database():
         print("Warning: Database initialization failed")
+    
+    # Initialize the appointment scheduler
+    from scheduler import init_scheduler
+    if not init_scheduler():
+        print("Warning: Scheduler initialization failed")
+    else:
+        print("Appointment scheduler initialized successfully")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Shutdown the scheduler gracefully
+    from scheduler import shutdown_scheduler
+    shutdown_scheduler()
+    print("Appointment scheduler shut down")
 
 # --- OTP Authentication Endpoints ---
 
@@ -195,8 +210,66 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         id=current_user.id,
         phone_number=current_user.phone_number,
         is_verified=current_user.is_verified,
-        created_at=int(current_user.created_at.timestamp())
+        created_at=int(current_user.created_at.timestamp()),
+        full_name=current_user.full_name,
+        blood_sugar_avg_without_tablets=current_user.blood_sugar_avg_without_tablets,
+        blood_pressure=current_user.blood_pressure,
+        blood_group=current_user.blood_group,
+        tsh_thyroid_value=current_user.tsh_thyroid_value
     )
+
+@app.post("/auth/me", response_model=UserMedicalDetailsResponse)
+async def update_user_medical_details(
+    request: UserMedicalDetailsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update current authenticated user's medical details"""
+    try:
+        # Update user medical details
+        if request.full_name is not None:
+            current_user.full_name = request.full_name
+        if request.blood_sugar_avg_without_tablets is not None:
+            current_user.blood_sugar_avg_without_tablets = request.blood_sugar_avg_without_tablets
+        if request.blood_pressure is not None:
+            current_user.blood_pressure = request.blood_pressure
+        if request.blood_group is not None:
+            current_user.blood_group = request.blood_group
+        if request.tsh_thyroid_value is not None:
+            current_user.tsh_thyroid_value = request.tsh_thyroid_value
+        
+        # Update timestamp
+        current_user.updated_at = datetime.utcnow()
+        
+        # Commit changes
+        db.commit()
+        db.refresh(current_user)
+        
+        return UserMedicalDetailsResponse(
+            success=True,
+            message="Medical details updated successfully",
+            user_id=current_user.id,
+            medical_details={
+                "full_name": current_user.full_name,
+                "blood_sugar_avg_without_tablets": current_user.blood_sugar_avg_without_tablets,
+                "blood_pressure": current_user.blood_pressure,
+                "blood_group": current_user.blood_group,
+                "tsh_thyroid_value": current_user.tsh_thyroid_value
+            }
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating user medical details: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while updating medical details. Please try again."
+        )
 
 # --- Appointment Management Endpoints ---
 @app.post("/appointments", response_model=CallScheduleResponse)
@@ -230,6 +303,18 @@ async def create_appointment(
         db.commit()
         db.refresh(db_call)
         
+        # Schedule the call using the background scheduler
+        scheduler = get_scheduler()
+        scheduling_success = scheduler.schedule_appointment_call(
+            call_id=call_id,
+            call_time=call_time_dt,
+            user_id=current_user.id
+        )
+        
+        if not scheduling_success:
+            # Log warning but don't fail the appointment creation
+            print(f"Warning: Failed to schedule background job for appointment {call_id}")
+        
         return CallScheduleResponse(
             call_id=call_id, 
             status="scheduled",
@@ -248,7 +333,11 @@ async def schedule_call(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Schedule an automated appointment booking call to the hospital on behalf of a patient."""
+    """Schedule an automated appointment booking call to the hospital on behalf of a patient.
+    
+    This endpoint now automatically schedules the call to be executed at the specified call_time
+    using a background scheduler that will trigger /start_conversation/{call_id} when the time arrives.
+    """
     call_id = str(uuid.uuid4())
     
     # Convert epoch timestamp to datetime for database storage
@@ -272,6 +361,18 @@ async def schedule_call(
         db.add(db_call)
         db.commit()
         db.refresh(db_call)
+        
+        # Schedule the call using the background scheduler
+        scheduler = get_scheduler()
+        scheduling_success = scheduler.schedule_appointment_call(
+            call_id=call_id,
+            call_time=call_time_dt,
+            user_id=current_user.id
+        )
+        
+        if not scheduling_success:
+            # Log warning but don't fail the appointment creation
+            print(f"Warning: Failed to schedule background job for appointment {call_id}")
         
         return CallScheduleResponse(
             call_id=call_id, 
@@ -498,77 +599,178 @@ async def get_conversation_audio(
 # --- Twilio Webhook Endpoints for Phone Call Conversation ---
 
 @app.post("/twilio/webhook/{call_id}")
-async def twilio_webhook(call_id: str, db: Session = Depends(get_db)):
+async def twilio_webhook(call_id: str, request: Request, db: Session = Depends(get_db)):
     """Handle Twilio webhook for call processing with Deepgram."""
-    # Get call from database
-    call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    
-    # Import TwiML
-    from twilio.twiml.voice_response import VoiceResponse
-    
-    # Create TwiML response
-    response = VoiceResponse()
-    
-    # Initial greeting for appointment booking (without call_time)
-    greeting = f"Hello! I'm calling on behalf of {call.patient_name} to schedule an appointment with Dr. {call.doctor_name} at {call.hospital_name}. Is this the correct number for appointment scheduling?"
-    
-    # Use Twilio's built-in Say for the first message to avoid initial delay
-    response.say(greeting)
-    
-    # Gather speech input with extended timeout for Deepgram processing
-    gather = response.gather(
-        input="speech",
-        action=f"/twilio/process_input/{call_id}",
-        method="POST",
-        timeout=30,  # Increased timeout to allow for TTS generation
-        speech_timeout=5,  # Wait 5 seconds for speech to start
-        speech_model="phone_call"
-    )
-    
-    return Response(content=str(response), media_type="application/xml")
+    try:
+        print(f"Twilio webhook received for call_id: {call_id}")
+        
+        # Get call from database with error handling
+        call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
+        if not call:
+            print(f"Call not found for call_id: {call_id}")
+            # Return a valid TwiML response even for errors to prevent 502
+            from twilio.twiml.voice_response import VoiceResponse
+            error_response = VoiceResponse()
+            error_response.say("I'm sorry, there was an issue with your call. Please try again later.")
+            error_response.hangup()
+            return Response(content=str(error_response), media_type="application/xml")
+        
+        # Import TwiML
+        from twilio.twiml.voice_response import VoiceResponse
+        
+        # Create TwiML response
+        response = VoiceResponse()
+        
+        # Initial greeting for appointment booking (without call_time)
+        greeting = f"Hello! I'm calling on behalf of {call.patient_name} to schedule an appointment with Dr. {call.doctor_name} at {call.hospital_name}. Is this the correct number for appointment scheduling?"
+        
+        # Use Twilio's built-in Say for the first message to avoid initial delay
+        response.say(greeting)
+        
+        # Gather speech input with extended timeout for Deepgram processing
+        gather = response.gather(
+            input="speech",
+            action=f"/twilio/process_input/{call_id}",
+            method="POST",
+            timeout=30,  # Increased timeout to allow for TTS generation
+            speech_timeout=5,  # Wait 5 seconds for speech to start
+            speech_model="phone_call"
+        )
+        
+        return Response(content=str(response), media_type="application/xml")
+        
+    except Exception as e:
+        print(f"Error in Twilio webhook for call {call_id}: {e}")
+        # Always return valid TwiML to prevent 502 errors
+        from twilio.twiml.voice_response import VoiceResponse
+        error_response = VoiceResponse()
+        error_response.say("I'm sorry, there was a technical issue. Please try again later.")
+        error_response.hangup()
+        return Response(content=str(error_response), media_type="application/xml")
 
 @app.post("/twilio/process_input/{call_id}")
 async def twilio_process_input(call_id: str, SpeechResult: Optional[str] = Form(None), db: Session = Depends(get_db)):
     """Process speech input from Twilio and generate LLM-powered response using Deepgram."""
-    print(f"Processing input for call {call_id}, SpeechResult: {SpeechResult}")
-    
-    # Get call from database
-    call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
-    if not call:
-        raise HTTPException(status_code=404, detail="Call not found")
-    
-    # Import TwiML
-    from twilio.twiml.voice_response import VoiceResponse
-    
-    # Initialize services
-    tts_service = TTSService(provider=os.getenv("TTS_PROVIDER", "deepgram"))
-    
-    response = VoiceResponse()
-    
-    if SpeechResult:
-        # Get conversation history
-        conversation_history = call.conversation_history or []
+    try:
+        print(f"Processing input for call {call_id}, SpeechResult: {SpeechResult}")
         
-        # Process with LLM
-        ai_response = process_conversation_with_llm(SpeechResult, call, db, conversation_history)
-        print(f"AI Response: {ai_response}")
+        # Get call from database with error handling
+        call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
+        if not call:
+            print(f"Call not found for call_id: {call_id}")
+            # Return valid TwiML instead of raising exception
+            from twilio.twiml.voice_response import VoiceResponse
+            error_response = VoiceResponse()
+            error_response.say("I'm sorry, there was an issue processing your request.")
+            error_response.hangup()
+            return Response(content=str(error_response), media_type="application/xml")
         
-        # Convert response to speech using Deepgram and store it on the call record
+        # Import TwiML
+        from twilio.twiml.voice_response import VoiceResponse
+        
+        # Initialize services with timeout protection
         try:
-            print(f"Generating TTS audio with Deepgram for: {ai_response[:50]}...")
-            audio_base64 = tts_service.text_to_base64_audio(ai_response)
-            call.last_audio = audio_base64
-            call.updated_at = datetime.utcnow()
-            db.commit()
-            print(f"Deepgram TTS audio generated successfully, size: {len(audio_base64)} chars")
+            tts_service = TTSService(provider=os.getenv("TTS_PROVIDER", "deepgram"))
         except Exception as e:
-            print(f"Deepgram TTS generation failed: {e}")
-            # Fallback to Twilio's built-in TTS
-            response.say(ai_response)
-            # Continue with gather without custom audio
+            print(f"TTS service initialization failed: {e}")
+            # Fallback response without TTS
+            error_response = VoiceResponse()
+            error_response.say("I'm sorry, there was a technical issue. Please try again later.")
+            error_response.hangup()
+            return Response(content=str(error_response), media_type="application/xml")
+        
+        response = VoiceResponse()
+        
+        if SpeechResult:
+            # Get conversation history
+            conversation_history = call.conversation_history or []
+            
+            # Process with LLM with timeout protection
+            try:
+                ai_response = process_conversation_with_llm(SpeechResult, call, db, conversation_history)
+                print(f"AI Response: {ai_response}")
+            except Exception as llm_error:
+                print(f"LLM processing failed: {llm_error}")
+                # Fallback to simple response
+                ai_response = f"I understand you're trying to book an appointment for {call.patient_name} with Dr. {call.doctor_name}. Let me help you with that."
+            
+            # Convert response to speech using Deepgram and store it on the call record
+            try:
+                print(f"Generating TTS audio with Deepgram for: {ai_response[:50]}...")
+                audio_base64 = tts_service.text_to_base64_audio(ai_response)
+                call.last_audio = audio_base64
+                call.updated_at = datetime.utcnow()
+                db.commit()
+                print(f"Deepgram TTS audio generated successfully, size: {len(audio_base64)} chars")
+            except Exception as e:
+                print(f"Deepgram TTS generation failed: {e}")
+                # Fallback to Twilio's built-in TTS
+                try:
+                    response.say(ai_response)
+                    # Continue with gather without custom audio
+                    if call.status != "appointment_booked":
+                        gather = response.gather(
+                            input="speech",
+                            action=f"/twilio/process_input/{call_id}",
+                            method="POST",
+                            timeout=30,
+                            speech_timeout=5,
+                            speech_model="phone_call"
+                        )
+                    else:
+                        response.say("Thank you for your assistance. Goodbye.")
+                        response.hangup()
+                    return Response(content=str(response), media_type="application/xml")
+                except Exception as fallback_error:
+                    print(f"Fallback TTS also failed: {fallback_error}")
+                    # Final fallback with generic message
+                    error_response = VoiceResponse()
+                    error_response.say("I'm sorry, there was a technical issue. Please try again later.")
+                    error_response.hangup()
+                    return Response(content=str(error_response), media_type="application/xml")
+
+            # Play the audio response via a reachable URL (Twilio will fetch this URL)
+            webhook_base = os.getenv('WEBHOOK_BASE_URL')
+            if webhook_base:
+                audio_url = f"{webhook_base}/twilio/audio/{call_id}"
+                print(f"Playing Deepgram audio from URL: {audio_url}")
+                response.play(audio_url)
+            else:
+                # If there's no public base URL, fall back to Twilio's Say
+                print("No webhook base URL, falling back to Twilio Say")
+                response.say(ai_response)
+            
+            # Continue gathering input unless appointment is booked
             if call.status != "appointment_booked":
+                gather = response.gather(
+                    input="speech",
+                    action=f"/twilio/process_input/{call_id}",
+                    method="POST",
+                    timeout=30,  # Extended timeout
+                    speech_timeout=5,  # Clear speech timeout
+                    speech_model="phone_call"
+                )
+            else:
+                # End conversation if appointment is booked
+                response.say("Thank you for your assistance. Goodbye.")
+                response.hangup()
+        
+        else:
+            # No speech detected
+            print("No speech result received")
+            ai_response = "I'm sorry, I didn't catch that. Could you please repeat?"
+            
+            try:
+                print("Generating fallback TTS audio with Deepgram...")
+                audio_base64 = tts_service.text_to_base64_audio(ai_response)
+                call.last_audio = audio_base64
+                call.updated_at = datetime.utcnow()
+                db.commit()
+                print("Fallback Deepgram TTS audio generated successfully")
+            except Exception as e:
+                print(f"Fallback Deepgram TTS generation failed: {e}")
+                # Just use Twilio's Say
+                response.say(ai_response)
                 gather = response.gather(
                     input="speech",
                     action=f"/twilio/process_input/{call_id}",
@@ -577,122 +779,89 @@ async def twilio_process_input(call_id: str, SpeechResult: Optional[str] = Form(
                     speech_timeout=5,
                     speech_model="phone_call"
                 )
+                return Response(content=str(response), media_type="application/xml")
+            
+            # Store and serve fallback audio
+            webhook_base = os.getenv('WEBHOOK_BASE_URL')
+            if webhook_base:
+                audio_url = f"{webhook_base}/twilio/audio/{call_id}"
+                print(f"Playing fallback Deepgram audio from URL: {audio_url}")
+                response.play(audio_url)
             else:
-                response.say("Thank you for your assistance. Goodbye.")
-                response.hangup()
-            return Response(content=str(response), media_type="application/xml")
-
-        # Play the audio response via a reachable URL (Twilio will fetch this URL)
-        webhook_base = os.getenv('WEBHOOK_BASE_URL')
-        if webhook_base:
-            audio_url = f"{webhook_base}/twilio/audio/{call_id}"
-            print(f"Playing Deepgram audio from URL: {audio_url}")
-            response.play(audio_url)
-        else:
-            # If there's no public base URL, fall back to Twilio's Say
-            print("No webhook base URL, falling back to Twilio Say")
-            response.say(ai_response)
-        
-        # Continue gathering input unless appointment is booked
-        if call.status != "appointment_booked":
+                print("No webhook base URL, using Twilio Say for fallback")
+                response.say(ai_response)
+            
             gather = response.gather(
                 input="speech",
                 action=f"/twilio/process_input/{call_id}",
                 method="POST",
                 timeout=30,  # Extended timeout
-                speech_timeout=5,  # Clear speech timeout
+                speech_timeout=5,  # Clear speech timeout  
                 speech_model="phone_call"
             )
-        else:
-            # End conversation if appointment is booked
-            response.say("Thank you for your assistance. Goodbye.")
-            response.hangup()
     
-    else:
-        # No speech detected
-        print("No speech result received")
-        ai_response = "I'm sorry, I didn't catch that. Could you please repeat?"
+        return Response(content=str(response), media_type="application/xml")
         
-        try:
-            print("Generating fallback TTS audio with Deepgram...")
-            audio_base64 = tts_service.text_to_base64_audio(ai_response)
-            call.last_audio = audio_base64
-            call.updated_at = datetime.utcnow()
-            db.commit()
-            print("Fallback Deepgram TTS audio generated successfully")
-        except Exception as e:
-            print(f"Fallback Deepgram TTS generation failed: {e}")
-            # Just use Twilio's Say
-            response.say(ai_response)
-            gather = response.gather(
-                input="speech",
-                action=f"/twilio/process_input/{call_id}",
-                method="POST",
-                timeout=30,
-                speech_timeout=5,
-                speech_model="phone_call"
-            )
-            return Response(content=str(response), media_type="application/xml")
-        
-        # Store and serve fallback audio
-        webhook_base = os.getenv('WEBHOOK_BASE_URL')
-        if webhook_base:
-            audio_url = f"{webhook_base}/twilio/audio/{call_id}"
-            print(f"Playing fallback Deepgram audio from URL: {audio_url}")
-            response.play(audio_url)
-        else:
-            print("No webhook base URL, using Twilio Say for fallback")
-            response.say(ai_response)
-        
-        gather = response.gather(
-            input="speech",
-            action=f"/twilio/process_input/{call_id}",
-            method="POST",
-            timeout=30,  # Extended timeout
-            speech_timeout=5,  # Clear speech timeout  
-            speech_model="phone_call"
-        )
-    
-    return Response(content=str(response), media_type="application/xml")
+    except Exception as e:
+        print(f"Unexpected error in process_input for call {call_id}: {e}")
+        # Always return valid TwiML to prevent 502 errors
+        from twilio.twiml.voice_response import VoiceResponse
+        error_response = VoiceResponse()
+        error_response.say("I'm sorry, there was an unexpected error. Please try again later.")
+        error_response.hangup()
+        return Response(content=str(error_response), media_type="application/xml")
 
 @app.get("/twilio/audio/{call_id}")
 async def twilio_audio(call_id: str, db: Session = Depends(get_db)):
     """Serve last generated TTS audio for a call as WAV so Twilio can fetch and play it."""
-    print(f"Twilio requesting audio for call_id={call_id}")
-    
-    # Get call from database
-    call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
-    if not call or not call.last_audio:
-        print(f"Audio not found for call {call_id}")
-        raise HTTPException(status_code=404, detail="Audio not found for this call")
-
-    b64 = call.last_audio
-    # Strip possible data URI prefix
-    if isinstance(b64, str) and b64.startswith("data:"):
-        try:
-            b64 = b64.split(',', 1)[1]
-        except Exception:
-            print("Failed to parse data URI in stored audio")
-            raise HTTPException(status_code=500, detail="Invalid stored audio format")
-
     try:
-        audio_bytes = base64.b64decode(b64)
-    except Exception as e:
-        print(f"Failed to decode base64 audio for call {call_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to decode audio: {e}")
+        print(f"Twilio requesting audio for call_id={call_id}")
+        
+        # Get call from database with error handling
+        call = db.query(AppointmentCall).filter(AppointmentCall.call_id == call_id).first()
+        if not call or not call.last_audio:
+            print(f"Audio not found for call {call_id}")
+            # Return a small silence audio file instead of 404 to prevent webhook issues
+            silence_wav = b'RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+            return Response(content=silence_wav, media_type="audio/wav")
 
-    # Detect common audio formats from magic bytes and return appropriate Content-Type
-    media_type = "audio/wav"
-    if audio_bytes.startswith(b"RIFF"):
+        b64 = call.last_audio
+        # Strip possible data URI prefix
+        if isinstance(b64, str) and b64.startswith("data:"):
+            try:
+                b64 = b64.split(',', 1)[1]
+            except Exception:
+                print("Failed to parse data URI in stored audio")
+                # Return silence instead of error
+                silence_wav = b'RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+                return Response(content=silence_wav, media_type="audio/wav")
+
+        try:
+            audio_bytes = base64.b64decode(b64)
+        except Exception as e:
+            print(f"Failed to decode base64 audio for call {call_id}: {e}")
+            # Return silence instead of error
+            silence_wav = b'RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+            return Response(content=silence_wav, media_type="audio/wav")
+
+        # Detect common audio formats from magic bytes and return appropriate Content-Type
         media_type = "audio/wav"
-    elif audio_bytes.startswith(b"ID3") or audio_bytes[:2] in (b"\xff\xfb", b"\xff\xf3"):
-        media_type = "audio/mpeg"
-    elif audio_bytes.startswith(b"OggS"):
-        media_type = "audio/ogg"
+        if audio_bytes.startswith(b"RIFF"):
+            media_type = "audio/wav"
+        elif audio_bytes.startswith(b"ID3") or audio_bytes[:2] in (b"\xff\xfb", b"\xff\xf3"):
+            media_type = "audio/mpeg"
+        elif audio_bytes.startswith(b"OggS"):
+            media_type = "audio/ogg"
 
-    headers = {"Content-Length": str(len(audio_bytes))}
-    print(f"Serving Deepgram audio for call {call_id} with media_type={media_type}, size={len(audio_bytes)}")
-    return Response(content=audio_bytes, media_type=media_type, headers=headers)
+        headers = {"Content-Length": str(len(audio_bytes))}
+        print(f"Serving Deepgram audio for call {call_id} with media_type={media_type}, size={len(audio_bytes)}")
+        return Response(content=audio_bytes, media_type=media_type, headers=headers)
+        
+    except Exception as e:
+        print(f"Unexpected error serving audio for call {call_id}: {e}")
+        # Return silence audio to prevent breaking Twilio webhooks
+        silence_wav = b'RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+        return Response(content=silence_wav, media_type="audio/wav")
 
 @app.get("/test/conversation/{call_id}")
 async def test_conversation(
@@ -873,9 +1042,15 @@ async def delete_user_appointment(
         raise HTTPException(status_code=404, detail="Appointment not found")
     
     try:
+        # Cancel the scheduled job if it exists
+        scheduler = get_scheduler()
+        scheduler.cancel_appointment_call(call_id)
+        
+        # Delete from database
         db.delete(call)
         db.commit()
-        return {"message": f"Appointment {call_id} deleted successfully"}
+        
+        return {"message": f"Appointment {call_id} deleted successfully and scheduled job cancelled"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete appointment: {str(e)}")
@@ -952,6 +1127,21 @@ async def retry_appointment_call(
         call.retry_count += 1
         call.status = "retry_scheduled"
         call.updated_at = datetime.utcnow()
+        
+        # Reschedule the call with a small delay (e.g., 5 minutes from now)
+        from datetime import timedelta
+        retry_time = datetime.utcnow() + timedelta(minutes=5)
+        
+        scheduler = get_scheduler()
+        scheduling_success = scheduler.reschedule_appointment_call(
+            call_id=call_id,
+            new_call_time=retry_time,
+            user_id=current_user.id
+        )
+        
+        if not scheduling_success:
+            print(f"Warning: Failed to reschedule background job for retry {call_id}")
+        
         db.commit()
         
         return {
@@ -959,11 +1149,132 @@ async def retry_appointment_call(
             "call_id": call_id,
             "retry_count": call.retry_count,
             "max_retries": call.max_retries,
-            "status": call.status
+            "status": call.status,
+            "retry_time": int(retry_time.timestamp())
         }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to schedule retry: {str(e)}")
+
+# --- Scheduler Management Endpoints ---
+
+@app.get("/scheduler/jobs")
+async def get_scheduled_jobs(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all currently scheduled appointment jobs"""
+    try:
+        scheduler = get_scheduler()
+        jobs = scheduler.get_scheduled_jobs()
+        
+        return {
+            "total_jobs": len(jobs),
+            "scheduled_jobs": jobs,
+            "user_id": current_user.id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get scheduled jobs: {str(e)}")
+
+@app.post("/appointments/{call_id}/reschedule")
+async def reschedule_appointment(
+    call_id: str,
+    new_call_time: int,  # Epoch timestamp
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Reschedule an existing appointment to a new time"""
+    call = db.query(AppointmentCall).filter(
+        AppointmentCall.call_id == call_id,
+        AppointmentCall.user_id == current_user.id
+    ).first()
+    
+    if not call:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    try:
+        # Convert new time
+        new_call_time_dt = datetime.fromtimestamp(new_call_time)
+        
+        # Update database
+        call.call_time = new_call_time_dt
+        call.status = "rescheduled"
+        call.updated_at = datetime.utcnow()
+        
+        # Reschedule the job
+        scheduler = get_scheduler()
+        scheduling_success = scheduler.reschedule_appointment_call(
+            call_id=call_id,
+            new_call_time=new_call_time_dt,
+            user_id=current_user.id
+        )
+        
+        if not scheduling_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to reschedule background job"
+            )
+        
+        db.commit()
+        
+        return {
+            "message": f"Appointment {call_id} rescheduled successfully",
+            "call_id": call_id,
+            "old_time": int(call.call_time.timestamp()),
+            "new_time": new_call_time,
+            "status": call.status
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid timestamp: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reschedule appointment: {str(e)}")
+
+@app.post("/appointments/{call_id}/trigger-now")
+async def trigger_appointment_now(
+    call_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manually trigger an appointment call immediately (bypasses scheduler)"""
+    call = db.query(AppointmentCall).filter(
+        AppointmentCall.call_id == call_id,
+        AppointmentCall.user_id == current_user.id
+    ).first()
+    
+    if not call:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    if call.status in ["completed", "failed", "cancelled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot trigger appointment with status: {call.status}"
+        )
+    
+    try:
+        # Cancel any existing scheduled job
+        scheduler = get_scheduler()
+        scheduler.cancel_appointment_call(call_id)
+        
+        # Update status
+        call.status = "manually_triggered"
+        call.updated_at = datetime.utcnow()
+        db.commit()
+        
+        # Trigger the call immediately using the existing start_conversation logic
+        # This essentially calls the same logic as the scheduled job would
+        scheduler._trigger_start_conversation_internal(call_id, current_user.id)
+        
+        return {
+            "message": f"Appointment call {call_id} triggered immediately",
+            "call_id": call_id,
+            "status": "manually_triggered",
+            "triggered_at": int(datetime.utcnow().timestamp())
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to trigger appointment: {str(e)}")
 
 # --- Legacy Admin Endpoints (for backward compatibility) ---
 

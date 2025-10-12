@@ -40,6 +40,13 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Medical details
+    full_name = Column(String, nullable=True)
+    blood_sugar_avg_without_tablets = Column(String, nullable=True)  # Average blood sugar when not taking tablets
+    blood_pressure = Column(String, nullable=True)  # Blood pressure readings
+    blood_group = Column(String, nullable=True)  # Blood group (A+, B-, O+, etc.)
+    tsh_thyroid_value = Column(String, nullable=True)  # TSH thyroid value if present
+    
     # Relationship to appointments
     appointments = relationship("AppointmentCall", back_populates="user")
 
