@@ -152,6 +152,7 @@ class UserResponse(BaseModel):
     blood_pressure: Optional[str] = None
     blood_group: Optional[str] = None
     tsh_thyroid_value: Optional[str] = None
+    weight: Optional[str] = None
 
 class UserMedicalDetailsRequest(BaseModel):
     full_name: Optional[str] = None
@@ -159,6 +160,7 @@ class UserMedicalDetailsRequest(BaseModel):
     blood_pressure: Optional[str] = None  # Blood pressure readings
     blood_group: Optional[str] = None  # Blood group (A+, B-, O+, etc.)
     tsh_thyroid_value: Optional[str] = None  # TSH thyroid value if present
+    weight: Optional[str] = None  # Weight in kg or lbs
     
     @validator('blood_group')
     def validate_blood_group(cls, v):

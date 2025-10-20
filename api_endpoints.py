@@ -215,7 +215,8 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         blood_sugar_avg_without_tablets=current_user.blood_sugar_avg_without_tablets,
         blood_pressure=current_user.blood_pressure,
         blood_group=current_user.blood_group,
-        tsh_thyroid_value=current_user.tsh_thyroid_value
+        tsh_thyroid_value=current_user.tsh_thyroid_value,
+        weight=current_user.weight
     )
 
 @app.post("/auth/me", response_model=UserMedicalDetailsResponse)
@@ -237,6 +238,8 @@ async def update_user_medical_details(
             current_user.blood_group = request.blood_group
         if request.tsh_thyroid_value is not None:
             current_user.tsh_thyroid_value = request.tsh_thyroid_value
+        if request.weight is not None:
+            current_user.weight = request.weight
         
         # Update timestamp
         current_user.updated_at = datetime.utcnow()
@@ -254,7 +257,8 @@ async def update_user_medical_details(
                 "blood_sugar_avg_without_tablets": current_user.blood_sugar_avg_without_tablets,
                 "blood_pressure": current_user.blood_pressure,
                 "blood_group": current_user.blood_group,
-                "tsh_thyroid_value": current_user.tsh_thyroid_value
+                "tsh_thyroid_value": current_user.tsh_thyroid_value,
+                "weight": current_user.weight
             }
         )
         

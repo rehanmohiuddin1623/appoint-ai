@@ -73,7 +73,15 @@ def main():
     print("\n📝 Next steps:")
     print("1. Update your DATABASE_URL in .env with your actual PostgreSQL credentials")
     print("2. Install dependencies: pip install -r requirements.txt")
-    print("3. Start the API: python main.py")
+    print("3. If upgrading from an older version, run: python migrate_weight.py")
+    print("4. Start the API: python main.py")
+    print("\n💡 User medical details now include:")
+    print("   - full_name")
+    print("   - blood_sugar_avg_without_tablets")
+    print("   - blood_pressure")
+    print("   - blood_group")
+    print("   - tsh_thyroid_value")
+    print("   - weight (new field)")
 
 if __name__ == "__main__":
     main()

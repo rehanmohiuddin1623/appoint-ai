@@ -127,6 +127,70 @@ class MedAssistClient:
         else:
             print(f"❌ Failed to get audio: {response.text}")
             return False
+    
+    def get_user_info(self):
+        """Get current user information including medical details"""
+        if not self.token:
+            print("❌ Not authenticated. Please authenticate first.")
+            return None
+        
+        response = self.session.get(f"{self.base_url}/auth/me")
+        
+        if response.status_code == 200:
+            user_data = response.json()
+            print("✅ User information retrieved:")
+            print(f"   📱 Phone: {user_data['phone_number']}")
+            print(f"   👤 Name: {user_data.get('full_name', 'Not set')}")
+            print(f"   🩸 Blood Pressure: {user_data.get('blood_pressure', 'Not set')}")
+            print(f"   🍯 Blood Sugar (avg without tablets): {user_data.get('blood_sugar_avg_without_tablets', 'Not set')}")
+            print(f"   🅱️ Blood Group: {user_data.get('blood_group', 'Not set')}")
+            print(f"   🦋 TSH Thyroid: {user_data.get('tsh_thyroid_value', 'Not set')}")
+            print(f"   ⚖️ Weight: {user_data.get('weight', 'Not set')}")
+            return user_data
+        else:
+            print(f"❌ Failed to get user info: {response.text}")
+            return None
+    
+    def update_medical_details(self, full_name=None, blood_pressure=None, 
+                              blood_sugar=None, blood_group=None, 
+                              tsh_thyroid=None, weight=None):
+        """Update user medical details including weight"""
+        if not self.token:
+            print("❌ Not authenticated. Please authenticate first.")
+            return False
+        
+        # Build update payload with only non-None values
+        update_data = {}
+        if full_name is not None:
+            update_data["full_name"] = full_name
+        if blood_pressure is not None:
+            update_data["blood_pressure"] = blood_pressure
+        if blood_sugar is not None:
+            update_data["blood_sugar_avg_without_tablets"] = blood_sugar
+        if blood_group is not None:
+            update_data["blood_group"] = blood_group
+        if tsh_thyroid is not None:
+            update_data["tsh_thyroid_value"] = tsh_thyroid
+        if weight is not None:
+            update_data["weight"] = weight
+        
+        if not update_data:
+            print("❌ No data provided for update")
+            return False
+        
+        response = self.session.post(f"{self.base_url}/auth/me", json=update_data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print("✅ Medical details updated successfully!")
+            print("📋 Updated details:")
+            for key, value in result["medical_details"].items():
+                if value:
+                    print(f"   {key}: {value}")
+            return True
+        else:
+            print(f"❌ Failed to update medical details: {response.text}")
+            return False
 
 def example_conversation():
     """Example conversation flow"""

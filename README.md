@@ -209,6 +209,7 @@ The AI agent follows a structured conversation flow:
 - `POST /auth/send-otp` - Send OTP to phone number
 - `POST /auth/verify-otp` - Verify OTP and get access token
 - `GET /auth/me` - Get current user information
+- `POST /auth/me` - Update user medical details
 
 ### Appointment Management  
 - `POST /appointments` - Create new appointment
@@ -232,9 +233,14 @@ The AI agent follows a structured conversation flow:
 ## Data Models
 
 ### Patient Information
-- Name, age, phone number
-- Medical conditions (blood pressure, diabetes, etc.)
-- Additional notes
+- Name, phone number
+- Medical conditions:
+  - Blood pressure readings
+  - Blood sugar levels (average without tablets)
+  - Blood group (A+, B-, O+, etc.)
+  - TSH thyroid values
+  - Weight (kg or lbs)
+- Additional medical notes
 
 ### Appointment Details  
 - Doctor name

@@ -46,6 +46,7 @@ class User(Base):
     blood_pressure = Column(String, nullable=True)  # Blood pressure readings
     blood_group = Column(String, nullable=True)  # Blood group (A+, B-, O+, etc.)
     tsh_thyroid_value = Column(String, nullable=True)  # TSH thyroid value if present
+    weight = Column(String, nullable=True)  # Weight in kg or lbs
     
     # Relationship to appointments
     appointments = relationship("AppointmentCall", back_populates="user")
