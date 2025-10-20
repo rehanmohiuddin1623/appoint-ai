@@ -2,6 +2,15 @@
 
 An AI-powered appointment booking system with advanced speech capabilities using FastAPI, Deepgram, and OpenAI services.
 
+## Outcome (A Mobile App Build with React Native to schedule & Manage Appointment Agent)
+### Platform : Android/IOS
+
+<img width="300" height="100%" alt="Screenshot_1760971433" src="https://github.com/user-attachments/assets/dd72039c-1208-4417-bdb0-16cae4a25f3c" />
+<img width="300" height="100%" alt="Screenshot_1760971453" src="https://github.com/user-attachments/assets/53440e79-af95-4279-921d-b0ec7b07078f" />
+<img width="300" height="100%" alt="Screenshot_1760971439" src="https://github.com/user-attachments/assets/03a08844-a288-404d-9e1c-77324996a278" />
+<img width="300" height="100%" alt="Screenshot_1760971726" src="https://github.com/user-attachments/assets/bd23d15f-d293-4356-8496-912fc24ab82f" />
+
+
 ## Features
 
 - 🎤 **Advanced Speech Processing**: Real-time speech-to-text and text-to-speech via Deepgram
